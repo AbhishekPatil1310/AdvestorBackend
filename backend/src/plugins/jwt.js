@@ -1,4 +1,3 @@
-// src/plugins/jwt.js
 const fp = require('fastify-plugin');
 const env = require('../config/env');
 const User = require('../models/user.model');
@@ -7,27 +6,29 @@ const {
   revokeRefreshToken,
   seconds,
 } = require('../utils/token.util');
-
+// for fastify.authentication
 function setAuthCookies(reply, accessToken, refreshToken) {
+  const isProd = env.NODE_ENV === 'production';
+
   reply
     .setCookie('accessToken', accessToken, {
       httpOnly: true,
-      sameSite: 'lax',
-      secure: env.NODE_ENV === 'production',
-      path: '/', // cover every route
+      sameSite: isProd ? 'none' : 'lax',
+      secure: isProd,
+      path: '/',
       maxAge: seconds(env.JWT_ACCESS_EXPIRES_IN),
     })
     .setCookie('refreshToken', refreshToken, {
       httpOnly: true,
-      sameSite: 'lax', // 'none' if FE/BE cross‑site
-      secure: env.NODE_ENV === 'production',
-      path: '/api/v1/auth',
+      sameSite: isProd ? 'none' : 'lax',
+      secure: isProd,
+      path: '/', // ✅ match with controller logout()
       maxAge: seconds(env.JWT_REFRESH_EXPIRES_IN),
     });
 }
 
 async function jwtPlugin(fastify) {
-  /* 2️⃣  JWT plugin with cookie name */
+  // 1️⃣ Register fastify-jwt
   fastify.register(require('@fastify/jwt'), {
     secret: env.JWT_SECRET,
     sign: { expiresIn: env.JWT_ACCESS_EXPIRES_IN },
@@ -37,19 +38,18 @@ async function jwtPlugin(fastify) {
     },
   });
 
-  /* 3️⃣  Auth decorator with auto‑refresh */
+  // 2️⃣ Auth decorator with refresh-token fallback
   fastify.decorate('authenticate', async function (request, reply) {
     try {
-      // Try normal access‑token verification first
+      // Try access token
       await request.jwtVerify();
     } catch (err) {
-      /* Access‑token missing / expired → try refresh‑token flow */
+      // Access token failed → try refresh token
       const refreshToken = request.cookies.refreshToken;
       if (!refreshToken) {
         return reply.unauthorized('Not authenticated');
       }
 
-      // Verify refresh token
       let decoded;
       try {
         decoded = await this.jwt.verify(refreshToken);
@@ -57,26 +57,26 @@ async function jwtPlugin(fastify) {
         return reply.unauthorized('Invalid refresh token');
       }
 
-      // Ensure user still exists
       const user = await User.findById(decoded.sub).select('-password');
       if (!user) return reply.unauthorized('User not found');
 
-      // 🔄  issue new access token (reuse existing refresh token)
-      const newAccess = await reply.jwtSign({
+      const newAccessToken = await reply.jwtSign({
         sub: user._id,
         role: user.role,
       });
 
-      setAuthCookies(reply, newAccess, refreshToken);
+      setAuthCookies(reply, newAccessToken, refreshToken);
 
-      // Attach payload so downstream handlers have user info
       request.user = { sub: user._id, role: user.role };
+      request.userData = user; // ✅ reuse loaded user
+      return;
     }
 
-    /* attach full user object for controllers */
-    const fullUser = await User.findById(request.user.sub).select('-password');
-    if (!fullUser) return reply.unauthorized('User not found');
-    request.userData = fullUser;
+    // If access token was valid, fetch full user details
+    const user = await User.findById(request.user.sub).select('-password');
+    if (!user) return reply.unauthorized('User not found');
+
+    request.userData = user;
   });
 }
 
