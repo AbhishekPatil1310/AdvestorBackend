@@ -11,22 +11,23 @@ const env = require('../config/env');
  * Helper: sets HTTP‑only auth cookies.
  */
 function setAuthCookies(reply, accessToken, refreshToken) {
+  const isProd = env.NODE_ENV === 'production';
   const accessMaxAge = seconds(env.JWT_ACCESS_EXPIRES_IN);
   const refreshMaxAge = seconds(env.JWT_REFRESH_EXPIRES_IN);
 
   reply
     .setCookie('accessToken', accessToken, {
       httpOnly: true,
-      sameSite: 'lax',
-      secure: env.NODE_ENV === 'production',
+      sameSite: isProd ? 'none' : 'lax',
+      secure: isProd,
       path: '/',
       maxAge: accessMaxAge,
     })
     .setCookie('refreshToken', refreshToken, {
       httpOnly: true,
-      sameSite: 'lax',
-      secure: env.NODE_ENV === 'production',
-      path: 'api/v1/auth',
+      sameSite: isProd ? 'none' : 'lax',
+      secure: isProd,
+      path: '/', // ✅ corrected path
       maxAge: refreshMaxAge,
     });
 }
@@ -93,31 +94,23 @@ module.exports.login = async function login(request, reply) {
 };
 
 /* ───────────────── refresh ───────────────── */
-// src/controllers/auth.controller.js
 module.exports.refresh = async function refresh(request, reply) {
   try {
-    // 1️⃣  read the token from body OR cookie
     const refreshToken =
       request.body?.refreshToken || request.cookies.refreshToken;
     if (!refreshToken) return reply.badRequest('Refresh token required');
 
-    // 2️⃣  verify *explicit* token string
     let decoded;
     try {
-      //  ✨  `this` inside a Fastify handler === fastify instance
       decoded = await this.jwt.verify(refreshToken);
-      //            ↑↑              ↑↑
-      //            fastify.jwt.verify(token)
     } catch {
       return reply.unauthorized('Invalid refresh token');
     }
 
-    // 3️⃣  confirm the token is still in DB
     const tokenHash = Token.createHashedToken(refreshToken);
     const stored = await Token.findOne({ tokenHash, user: decoded.sub });
     if (!stored) return reply.unauthorized('Refresh token revoked');
 
-    // 4️⃣  issue new access token, reuse refresh token
     const accessToken = await reply.jwtSign({
       sub: decoded.sub,
       role: decoded.role,
@@ -140,7 +133,7 @@ module.exports.logout = async function logout(request, reply) {
 
     reply
       .clearCookie('accessToken', { path: '/' })
-      .clearCookie('refreshToken', { path: '/api/v1/auth' })
+      .clearCookie('refreshToken', { path: '/api/v1/auth' }) // ✅ must match what was set
       .send({ message: 'Logged out' });
   } catch (err) {
     request.log.error(err);
@@ -148,7 +141,8 @@ module.exports.logout = async function logout(request, reply) {
   }
 };
 
-module.exports.getCurrentUser = async function (request, reply) {
+/* ───────────────── current user ───────────────── */
+module.exports.getCurrentUser = async function getCurrentUser(request, reply) {
   try {
     reply.send({ user: request.userData });
   } catch (err) {
