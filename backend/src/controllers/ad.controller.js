@@ -94,17 +94,41 @@ async function updateCreditHandler(req, reply) {
     const user = await User.findById(userId);
     if (!user) return reply.notFound('User not found');
 
+    // Calculate credit spent this update
+    const creditDifference = (user.credit || 0) - credit;
+
+    // Only update spent if credit is being reduced
+    if (creditDifference > 0) {
+      const now = new Date();
+      const lastReset = user.lastSpentReset || new Date();
+
+      // Reset monthlySpent if a new month has started
+      const monthChanged =
+        lastReset.getMonth() !== now.getMonth() || lastReset.getFullYear() !== now.getFullYear();
+
+      if (monthChanged) {
+        user.monthlySpent = 0;
+        user.lastSpentReset = now;
+      }
+
+      user.totalSpent = (user.totalSpent || 0) + creditDifference;
+      user.monthlySpent = (user.monthlySpent || 0) + creditDifference;
+    }
+
     user.credit = credit;
     await user.save();
 
     return reply.send({
       message: 'Credit updated successfully',
       credit: user.credit,
+      totalSpent: user.totalSpent,
+      monthlySpent: user.monthlySpent,
     });
   } catch (err) {
     req.log.error({ err }, '[updateCreditHandler] Failed to update credit');
     return reply.internalServerError('Could not update credit');
   }
 }
+
 
 module.exports = { uploadAdHandler,getAdvertiserAdsHandler,updateCreditHandler };
